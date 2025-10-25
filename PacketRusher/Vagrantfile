@@ -1,0 +1,18 @@
+# Vagrantfile
+Vagrant.configure("2") do |config|
+    config.vm.box = "generic/ubuntu2204"
+    config.vm.hostname = "UEs-VM"
+
+    # NIC1: 管理/NAT（預設）
+    # NIC2: 私網（host <-> VM 可直通，拿來放 N2/N3）
+    config.vm.network "private_network",
+        ip: "192.168.121.50" # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24）
+
+
+    config.vm.provider :libvirt do |lv|
+        lv.memory = 4096
+        lv.cpus = 4
+        lv.nic_model_type = "virtio"
+    end
+    config.vm.provision "shell", path: "provision.sh", privileged: false
+end
