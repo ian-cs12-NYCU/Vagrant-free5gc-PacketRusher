@@ -22,10 +22,21 @@ if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
     echo -e "${GREEN}✓ Configuration loaded${NC}"
     echo -e "  • UEs-VM IP: ${UES_VM_IP}"
+    echo -e "  • free5GC VM IP: ${FREE5GC_VM_IP}"
     echo -e "  • ENO2 Interface: ${ENO2_INTERFACE} (${ENO2_IP})"
     echo -e "  • Gateway: ${GATEWAY_IP}"
     echo -e "  • Destination Network: ${DEST_NETWORK}"
     echo -e "  • Routing Table: ${RT_TABLE_NAME} (ID: ${RT_TABLE_ID})"
+    
+    # Check if NETWORK_MODE is set, default to 'specific'
+    NETWORK_MODE="${NETWORK_MODE:-specific}"
+    if [ "$NETWORK_MODE" == "subnet" ]; then
+        echo -e "  ${YELLOW}• Mode: Subnet-based (整個私有網段)${NC}"
+        echo -e "    Source: ${VAGRANT_PRIVATE_NETWORK}"
+    else
+        echo -e "  ${YELLOW}• Mode: Specific VMs (指定 VM)${NC}"
+        echo -e "    Sources: ${UES_VM_IP}, ${FREE5GC_VM_IP}"
+    fi
 else
     echo -e "${RED}Error: Configuration file not found: ${CONFIG_FILE}${NC}"
     echo -e "${RED}Please create pbr_config.env with required settings.${NC}"
@@ -86,19 +97,55 @@ delete_pbr_config() {
     
     # Step 1: Remove NAT rules
     echo -e "\n${YELLOW}[Step 1]${NC} Removing NAT rules..."
-    if sudo iptables -t nat -C POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
-        sudo iptables -t nat -D POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
-        echo -e "${GREEN}✓ NAT rule removed${NC}"
+    
+    if [ "$NETWORK_MODE" == "subnet" ]; then
+        # Subnet mode: remove subnet-based NAT rule
+        if sudo iptables -t nat -C POSTROUTING -s "${VAGRANT_PRIVATE_NETWORK}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+            sudo iptables -t nat -D POSTROUTING -s "${VAGRANT_PRIVATE_NETWORK}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+            echo -e "${GREEN}✓ NAT rule for subnet ${VAGRANT_PRIVATE_NETWORK} removed${NC}"
+        else
+            echo -e "${YELLOW}• No NAT rule found for subnet${NC}"
+        fi
     else
-        echo -e "${YELLOW}• No NAT rule found${NC}"
+        # Specific mode: remove individual VM NAT rules
+        if sudo iptables -t nat -C POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+            sudo iptables -t nat -D POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+            echo -e "${GREEN}✓ NAT rule for UEs-VM (${UES_VM_IP}) removed${NC}"
+        else
+            echo -e "${YELLOW}• No NAT rule found for UEs-VM${NC}"
+        fi
+        
+        if sudo iptables -t nat -C POSTROUTING -s "${FREE5GC_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+            sudo iptables -t nat -D POSTROUTING -s "${FREE5GC_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+            echo -e "${GREEN}✓ NAT rule for free5GC VM (${FREE5GC_VM_IP}) removed${NC}"
+        else
+            echo -e "${YELLOW}• No NAT rule found for free5GC VM${NC}"
+        fi
     fi
     
-    # Step 2: Remove policy routing rule
-    echo -e "\n${YELLOW}[Step 2]${NC} Removing policy routing rule..."
-    if sudo ip rule del from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null; then
-        echo -e "${GREEN}✓ Policy rule removed${NC}"
+    # Step 2: Remove policy routing rules
+    echo -e "\n${YELLOW}[Step 2]${NC} Removing policy routing rules..."
+    
+    if [ "$NETWORK_MODE" == "subnet" ]; then
+        # Subnet mode: remove subnet-based rule
+        if sudo ip rule del from "${VAGRANT_PRIVATE_NETWORK}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null; then
+            echo -e "${GREEN}✓ Policy rule for subnet ${VAGRANT_PRIVATE_NETWORK} removed${NC}"
+        else
+            echo -e "${YELLOW}• No policy rule found for subnet${NC}"
+        fi
     else
-        echo -e "${YELLOW}• No policy rule found${NC}"
+        # Specific mode: remove individual VM rules
+        if sudo ip rule del from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null; then
+            echo -e "${GREEN}✓ Policy rule for UEs-VM (${UES_VM_IP}) removed${NC}"
+        else
+            echo -e "${YELLOW}• No policy rule found for UEs-VM${NC}"
+        fi
+        
+        if sudo ip rule del from "${FREE5GC_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null; then
+            echo -e "${GREEN}✓ Policy rule for free5GC VM (${FREE5GC_VM_IP}) removed${NC}"
+        else
+            echo -e "${YELLOW}• No policy rule found for free5GC VM${NC}"
+        fi
     fi
     
     # Step 3: Remove routes from custom table
@@ -191,14 +238,31 @@ sudo ip route del "${DEST_NETWORK}" via "${GATEWAY_IP}" dev "${ENO2_INTERFACE}" 
 sudo ip route add "${DEST_NETWORK}" via "${GATEWAY_IP}" dev "${ENO2_INTERFACE}" table "${RT_TABLE_NAME}"
 echo -e "${GREEN}✓ Route added${NC}"
 
-# Step 5: Add policy routing rule for traffic from UEs-VM
+# Step 5: Add policy routing rule for traffic from VMs
 echo -e "\n${YELLOW}[Step 5]${NC} Setting up policy routing rule..."
-echo -e "${YELLOW}Creating rule: traffic from ${UES_VM_IP} to ${DEST_NETWORK} uses table ${RT_TABLE_NAME}...${NC}"
 
-# Remove existing rule if present to avoid duplicates
-sudo ip rule del from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null || true
-sudo ip rule add from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}"
-echo -e "${GREEN}✓ Policy rule added${NC}"
+if [ "$NETWORK_MODE" == "subnet" ]; then
+    # Subnet mode: add rule for entire private network
+    echo -e "${YELLOW}Creating rule: traffic from ${VAGRANT_PRIVATE_NETWORK} to ${DEST_NETWORK} uses table ${RT_TABLE_NAME}...${NC}"
+    
+    # Remove existing rule if present to avoid duplicates
+    sudo ip rule del from "${VAGRANT_PRIVATE_NETWORK}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null || true
+    sudo ip rule add from "${VAGRANT_PRIVATE_NETWORK}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}"
+    echo -e "${GREEN}✓ Policy rule added for subnet ${VAGRANT_PRIVATE_NETWORK}${NC}"
+else
+    # Specific mode: add rules for individual VMs
+    echo -e "${YELLOW}Creating rules for specific VMs to ${DEST_NETWORK} using table ${RT_TABLE_NAME}...${NC}"
+    
+    # Rule for UEs-VM
+    sudo ip rule del from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null || true
+    sudo ip rule add from "${UES_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}"
+    echo -e "${GREEN}✓ Policy rule added for UEs-VM (${UES_VM_IP})${NC}"
+    
+    # Rule for free5GC VM
+    sudo ip rule del from "${FREE5GC_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}" 2>/dev/null || true
+    sudo ip rule add from "${FREE5GC_VM_IP}" to "${DEST_NETWORK}" table "${RT_TABLE_NAME}"
+    echo -e "${GREEN}✓ Policy rule added for free5GC VM (${FREE5GC_VM_IP})${NC}"
+fi
 
 # Step 6: Enable IP forwarding and NAT
 echo -e "\n${YELLOW}[Step 6]${NC} Enabling IP forwarding and NAT..."
@@ -213,13 +277,34 @@ else
 fi
 
 # Set up NAT (SNAT) for traffic going out via eno2
-echo -e "${YELLOW}Setting up NAT for traffic from ${UES_VM_IP} via ${ENO2_INTERFACE}...${NC}"
-# Check if iptables rule already exists
-if ! sudo iptables -t nat -C POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
-    sudo iptables -t nat -A POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
-    echo -e "${GREEN}✓ NAT rule added${NC}"
+if [ "$NETWORK_MODE" == "subnet" ]; then
+    # Subnet mode: NAT for entire private network
+    echo -e "${YELLOW}Setting up NAT for subnet ${VAGRANT_PRIVATE_NETWORK} via ${ENO2_INTERFACE}...${NC}"
+    if ! sudo iptables -t nat -C POSTROUTING -s "${VAGRANT_PRIVATE_NETWORK}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+        sudo iptables -t nat -A POSTROUTING -s "${VAGRANT_PRIVATE_NETWORK}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+        echo -e "${GREEN}✓ NAT rule added for subnet ${VAGRANT_PRIVATE_NETWORK}${NC}"
+    else
+        echo -e "${GREEN}✓ NAT rule already exists for subnet${NC}"
+    fi
 else
-    echo -e "${GREEN}✓ NAT rule already exists${NC}"
+    # Specific mode: NAT for individual VMs
+    echo -e "${YELLOW}Setting up NAT for VMs via ${ENO2_INTERFACE}...${NC}"
+    
+    # NAT for UEs-VM
+    if ! sudo iptables -t nat -C POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+        sudo iptables -t nat -A POSTROUTING -s "${UES_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+        echo -e "${GREEN}✓ NAT rule added for UEs-VM (${UES_VM_IP})${NC}"
+    else
+        echo -e "${GREEN}✓ NAT rule already exists for UEs-VM${NC}"
+    fi
+    
+    # NAT for free5GC VM
+    if ! sudo iptables -t nat -C POSTROUTING -s "${FREE5GC_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}" 2>/dev/null; then
+        sudo iptables -t nat -A POSTROUTING -s "${FREE5GC_VM_IP}" -o "${ENO2_INTERFACE}" -j SNAT --to-source "${ENO2_IP_ONLY}"
+        echo -e "${GREEN}✓ NAT rule added for free5GC VM (${FREE5GC_VM_IP})${NC}"
+    else
+        echo -e "${GREEN}✓ NAT rule already exists for free5GC VM${NC}"
+    fi
 fi
 
 # Summary
@@ -227,7 +312,16 @@ echo -e "\n${GREEN}=== Configuration Complete ===${NC}"
 echo -e "Summary:"
 echo -e "  • Interface: ${ENO2_INTERFACE} (${ENO2_IP})"
 echo -e "  • Custom routing table: ${RT_TABLE_NAME} (ID: ${RT_TABLE_ID})"
-echo -e "  • Traffic from: ${UES_VM_IP}"
+
+if [ "$NETWORK_MODE" == "subnet" ]; then
+    echo -e "  • Mode: ${YELLOW}Subnet-based${NC}"
+    echo -e "  • Traffic from: ${VAGRANT_PRIVATE_NETWORK} (整個私有網段)"
+else
+    echo -e "  • Mode: ${YELLOW}Specific VMs${NC}"
+    echo -e "  • Traffic from: ${UES_VM_IP} (UEs-VM)"
+    echo -e "                  ${FREE5GC_VM_IP} (free5GC VM)"
+fi
+
 echo -e "  • To destination: ${DEST_NETWORK}"
 echo -e "  • Via gateway: ${GATEWAY_IP}"
 echo -e "  • NAT source IP: ${ENO2_IP_ONLY}"
@@ -240,6 +334,10 @@ echo -e "\n${YELLOW}Current policy routing rules:${NC}"
 sudo ip rule list | grep -A1 -B1 "${RT_TABLE_NAME}" || echo "No rules found"
 
 echo -e "\n${YELLOW}Current NAT rules:${NC}"
-sudo iptables -t nat -L POSTROUTING -n -v | grep "${UES_VM_IP}" || echo "No NAT rules found"
+sudo iptables -t nat -L POSTROUTING -n -v | grep -E "(${UES_VM_IP}|${FREE5GC_VM_IP}|${VAGRANT_PRIVATE_NETWORK})" || echo "No NAT rules found"
 
-echo -e "\n${GREEN}Setup complete! Traffic from ${UES_VM_IP} to ${DEST_NETWORK} will be routed via ${ENO2_INTERFACE}.${NC}"
+if [ "$NETWORK_MODE" == "subnet" ]; then
+    echo -e "\n${GREEN}Setup complete! Traffic from ${VAGRANT_PRIVATE_NETWORK} to ${DEST_NETWORK} will be routed via ${ENO2_INTERFACE}.${NC}"
+else
+    echo -e "\n${GREEN}Setup complete! Traffic from UEs-VM (${UES_VM_IP}) and free5GC VM (${FREE5GC_VM_IP}) to ${DEST_NETWORK} will be routed via ${ENO2_INTERFACE}.${NC}"
+fi

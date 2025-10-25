@@ -1,0 +1,59 @@
+.# .gitignore for Vagrant / VM projects
+.# Kept pbr_config.env in repo per user request
+
+# Vagrant / VM state and boxes
+.vagrant/
+.vagrant.d/
+*.box
+
+# VM images and disk files
+*.qcow2
+*.vdi
+*.vmdk
+*.img
+
+# Environment files - ignore general .env but keep project-specific pbr_config.env
+*.env
+!free5gc_PacketRusher/pbr_config.env
+
+# Certificates and keys
+*.key
+*.pem
+*.crt
+*.csr
+secret*
+credentials
+
+# Logs, runtime files and tmp
+*.log
+*.pid
+*.sock
+tmp/
+/tmp/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+*.swo
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build / dependencies / tools
+node_modules/
+dist/
+build/
+.terraform/
+.ansible/
+
+# Backup files
+*.bak
+*.old
+*.backup
+

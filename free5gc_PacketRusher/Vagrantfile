@@ -10,35 +10,69 @@ if File.exist?(config_file)
     line = line.strip
     next if line.empty? || line.start_with?('#')
     key, value = line.split('=', 2)
-    config_vars[key] = value if key && value
+    if key && value
+      # remove inline comments and extra whitespace
+      value = value.split('#', 2)[0].strip
+      # remove surrounding quotes if present
+      value = value.gsub(/\A["']|["']\z/, '')
+      config_vars[key] = value
+    end
   end
   
   UES_VM_IP = config_vars['UES_VM_IP'] || '192.168.121.50'
   UES_VM_HOSTNAME = config_vars['UES_VM_HOSTNAME'] || 'UEs-VM'
   UES_VM_MEMORY = (config_vars['UES_VM_MEMORY'] || '4096').to_i
   UES_VM_CPUS = (config_vars['UES_VM_CPUS'] || '4').to_i
+  
+  FREE5GC_VM_IP = config_vars['FREE5GC_VM_IP'] || '192.168.121.40'
+  FREE5GC_VM_HOSTNAME = config_vars['FREE5GC_VM_HOSTNAME'] || 'free5GC'
+  FREE5GC_VM_MEMORY = (config_vars['FREE5GC_VM_MEMORY'] || '4096').to_i
+  FREE5GC_VM_CPUS = (config_vars['FREE5GC_VM_CPUS'] || '4').to_i
 else
   puts "Warning: pbr_config.env not found, using default values"
   UES_VM_IP = '192.168.121.50'
   UES_VM_HOSTNAME = 'UEs-VM'
   UES_VM_MEMORY = 4096
   UES_VM_CPUS = 4
+  
+  FREE5GC_VM_IP = '192.168.121.40'
+  FREE5GC_VM_HOSTNAME = 'free5GC'
+  FREE5GC_VM_MEMORY = 4096
+  FREE5GC_VM_CPUS = 4
 end
 
 Vagrant.configure("2") do |config|
-    config.vm.box = "generic/ubuntu2204"
-    config.vm.hostname = UES_VM_HOSTNAME
+    config.vm.define "ues-vm" do |ues|
+        ues.vm.box = "generic/ubuntu2204"
+        ues.vm.hostname = UES_VM_HOSTNAME
 
-    # NIC1: 管理/NAT（預設）
-    # NIC2: 私網（host <-> VM 可直通，拿來放 N2/N3）
-    config.vm.network "private_network",
-        ip: UES_VM_IP # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24）
+        # NIC1: 管理/NAT（預設）
+        # NIC2: 私網（host <-> VM 可直通，拿來放 N2/N3）
+        ues.vm.network "private_network",
+            ip: UES_VM_IP # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24)
 
-
-    config.vm.provider :libvirt do |lv|
-        lv.memory = UES_VM_MEMORY
-        lv.cpus = UES_VM_CPUS
-        lv.nic_model_type = "virtio"
+        ues.vm.provider :libvirt do |lv|
+            lv.memory = UES_VM_MEMORY
+            lv.cpus = UES_VM_CPUS
+            lv.nic_model_type = "virtio"
+        end
+  ues.vm.provision "shell", path: "provision_ues_VM.sh", privileged: false
     end
-    config.vm.provision "shell", path: "provision.sh", privileged: false
+
+    config.vm.define "free5GC" do |free5gc|
+        free5gc.vm.box = "generic/ubuntu2204"
+        free5gc.vm.hostname = FREE5GC_VM_HOSTNAME
+
+        # NIC1: 管理/NAT（預設）
+        # NIC2: 私網（host <-> VM 可直通，拿來放 N2/N3）
+        free5gc.vm.network "private_network",
+            ip: FREE5GC_VM_IP # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24)
+
+        free5gc.vm.provider :libvirt do |lv|
+            lv.memory = FREE5GC_VM_MEMORY
+            lv.cpus = FREE5GC_VM_CPUS
+            lv.nic_model_type = "virtio"
+        end
+        free5gc.vm.provision "shell", path: "provision_free5gc.sh", privileged: false
+    end
 end
