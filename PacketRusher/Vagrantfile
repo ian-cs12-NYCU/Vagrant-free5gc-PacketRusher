@@ -1,17 +1,43 @@
 # Vagrantfile
+
+# Load configuration from pbr_config.env
+config_file = File.join(File.dirname(__FILE__), 'pbr_config.env')
+
+if File.exist?(config_file)
+  # Parse the config file manually (simple key=value format)
+  config_vars = {}
+  File.readlines(config_file).each do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?('#')
+    key, value = line.split('=', 2)
+    config_vars[key] = value if key && value
+  end
+  
+  UES_VM_IP = config_vars['UES_VM_IP'] || '192.168.121.50'
+  UES_VM_HOSTNAME = config_vars['UES_VM_HOSTNAME'] || 'UEs-VM'
+  UES_VM_MEMORY = (config_vars['UES_VM_MEMORY'] || '4096').to_i
+  UES_VM_CPUS = (config_vars['UES_VM_CPUS'] || '4').to_i
+else
+  puts "Warning: pbr_config.env not found, using default values"
+  UES_VM_IP = '192.168.121.50'
+  UES_VM_HOSTNAME = 'UEs-VM'
+  UES_VM_MEMORY = 4096
+  UES_VM_CPUS = 4
+end
+
 Vagrant.configure("2") do |config|
     config.vm.box = "generic/ubuntu2204"
-    config.vm.hostname = "UEs-VM"
+    config.vm.hostname = UES_VM_HOSTNAME
 
     # NIC1: 管理/NAT（預設）
     # NIC2: 私網（host <-> VM 可直通，拿來放 N2/N3）
     config.vm.network "private_network",
-        ip: "192.168.121.50" # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24）
+        ip: UES_VM_IP # 會掛到 vagrant-libvirt 網段（通常 192.168.121.0/24）
 
 
     config.vm.provider :libvirt do |lv|
-        lv.memory = 4096
-        lv.cpus = 4
+        lv.memory = UES_VM_MEMORY
+        lv.cpus = UES_VM_CPUS
         lv.nic_model_type = "virtio"
     end
     config.vm.provision "shell", path: "provision.sh", privileged: false
