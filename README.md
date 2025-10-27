@@ -243,6 +243,28 @@ Host ues-vm
 - Port 需要與 `vagrant ssh-config` 顯示的一致
 - 需要將 VM 的 private key 複製到 Ian-PC
 
+注意：IdentityFile 與私鑰位置
+
+  - `IdentityFile` 必須是連線端（例如 Ian-PC）持有的私鑰檔案，SSH 會在客戶端讀取該私鑰以通過 VM 的帳號驗證。當您使用跳板機（ProxyJump）時，請確保 `IdentityFile` 指向 Ian-PC 上實際存在的私鑰路徑。
+  - 在 Andy-PC 上，Vagrant 會把 VM 的 private key 放在類似 `/home/ian/vagrant-practice/free5gc_PacketRusher/.vagrant/machines/free5GC/libvirt/private_key` 的位置；這個路徑在 Ian-PC 上並不存在，因此不能直接在 Ian-PC 的 `~/.ssh/config` 中使用該原始路徑。
+  - 解法：從 Andy-PC 複製私鑰到 Ian-PC 的 `~/.ssh/`，並在 `~/.ssh/config` 中將 `IdentityFile` 指向該複製後的檔案。範例：
+
+```bash
+# 在 Ian-PC 上（從 Andy-PC 複製 private key）
+# 假設 Andy-PC 的帳號是 andy，並且 Vagrant private_key 在該路徑
+scp andy@<Andy-PC-IP>:/path/to/vagrant-practice/free5gc_PacketRusher/.vagrant/machines/free5GC/libvirt/private_key ~/.ssh/vagrant_free5gc_key
+scp andy@<Andy-PC-IP>:/path/to/vagrant-practice/free5gc_PacketRusher/.vagrant/machines/UEs-VM/libvirt/private_key ~/.ssh/vagrant_ues_key
+
+# 設置安全權限
+chmod 600 ~/.ssh/vagrant_free5gc_key
+chmod 600 ~/.ssh/vagrant_ues_key
+
+# 在你的 ~/.ssh/config 中使用複製後的路徑作為 IdentityFile
+ # IdentityFile ~/.ssh/vagrant_free5gc_key
+```
+
+  - 安全提醒：這些檔案是私鑰（private key），請務必妥善保管，切勿提交到版本控制系統或在不安全的通道中傳送。若只想讓 Andy-PC 的使用者能 SSH 到 VM，亦可在 Andy-PC 上把對應的公鑰（public key）加入 VM 的 `~/.ssh/authorized_keys`，但若 Ian-PC 要直接使用 `IdentityFile` 進行認證，仍然需要把私鑰放在 Ian-PC。
+
 #### 步驟 2: 測試連接
 
 ```bash
