@@ -7,12 +7,17 @@ if File.exist?(config_file)
   # Parse the config file manually (simple key=value format)
   config_vars = {}
   File.readlines(config_file).each do |line|
-    line = line.strip
+    # defensive: skip nil lines and normalize
+    next if line.nil?
+    line = line.to_s.strip
     next if line.empty? || line.start_with?('#')
-    key, value = line.split('=', 2)
-    if key && value
+
+    # match key=value (value optional, allow inline comments)
+    if line =~ /\A\s*([^=\s]+)\s*=\s*(.*)\z/
+      key = $1
+      value = $2 || ''
       # remove inline comments and extra whitespace
-      value = value.split('#', 2)[0].strip
+      value = value.split('#', 2)[0].to_s.strip
       # remove surrounding quotes if present
       value = value.gsub(/\A["']|["']\z/, '')
       config_vars[key] = value
@@ -23,22 +28,26 @@ if File.exist?(config_file)
   UES_VM_HOSTNAME = config_vars['UES_VM_HOSTNAME'] || 'UEs-VM'
   UES_VM_MEMORY = (config_vars['UES_VM_MEMORY'] || '4096').to_i
   UES_VM_CPUS = (config_vars['UES_VM_CPUS'] || '4').to_i
+  UES_VM_CPUSET = config_vars['UES_VM_CPUSET'] || ''
   
   FREE5GC_VM_IP = config_vars['FREE5GC_VM_IP'] || '192.168.121.40'
   FREE5GC_VM_HOSTNAME = config_vars['FREE5GC_VM_HOSTNAME'] || 'free5GC'
   FREE5GC_VM_MEMORY = (config_vars['FREE5GC_VM_MEMORY'] || '4096').to_i
   FREE5GC_VM_CPUS = (config_vars['FREE5GC_VM_CPUS'] || '4').to_i
+  FREE5GC_VM_CPUSET = config_vars['FREE5GC_VM_CPUSET'] || ''
 else
   puts "Warning: pbr_config.env not found, using default values"
   UES_VM_IP = '192.168.121.50'
   UES_VM_HOSTNAME = 'UEs-VM'
-  UES_VM_MEMORY = 4096
-  UES_VM_CPUS = 4
+  UES_VM_MEMORY = 16384
+  UES_VM_CPUS = 8
+  UES_VM_CPUSET = ''
   
   FREE5GC_VM_IP = '192.168.121.40'
   FREE5GC_VM_HOSTNAME = 'free5GC'
-  FREE5GC_VM_MEMORY = 4096
-  FREE5GC_VM_CPUS = 4
+  FREE5GC_VM_MEMORY = 16384
+  FREE5GC_VM_CPUS = 8
+  FREE5GC_VM_CPUSET = ''
 end
 
 Vagrant.configure("2") do |config|
@@ -56,6 +65,44 @@ Vagrant.configure("2") do |config|
             lv.cpus = UES_VM_CPUS
             lv.nic_model_type = "virtio"
         end
+        
+        # CPU pinning via trigger after VM is up
+        if UES_VM_CPUSET && !UES_VM_CPUSET.empty?
+          ues.trigger.after [:up, :reload] do |trigger|
+            trigger.name = "Pin vCPUs to host CPUs"
+            trigger.info = "Pinning ues-vm VM vCPUs to host CPUs: #{UES_VM_CPUSET}"
+            
+            # Parse cpuset
+            cpuset_array = []
+            if UES_VM_CPUSET.include?('-')
+              range_parts = UES_VM_CPUSET.split('-')
+              if range_parts.length == 2
+                start_cpu = range_parts[0].to_i
+                end_cpu = range_parts[1].to_i
+                cpuset_array = (start_cpu..end_cpu).to_a
+              end
+            elsif UES_VM_CPUSET.include?(',')
+              cpuset_array = UES_VM_CPUSET.split(',').map(&:strip).map(&:to_i)
+            else
+              cpuset_array = [UES_VM_CPUSET.to_i]
+            end
+            
+            if cpuset_array.length > 0
+              domain_name = "free5gc_PacketRusher_ues-vm"
+              
+              # Build single command to pin all vcpus
+              pin_commands = []
+              UES_VM_CPUS.times do |vcpu_id|
+                host_cpu = cpuset_array[vcpu_id % cpuset_array.length]
+                pin_commands << "virsh vcpupin #{domain_name} #{vcpu_id} #{host_cpu}"
+              end
+              
+              # Execute all pins in one sudo call
+              trigger.run = {inline: "sudo bash -c \"#{pin_commands.join(' && ')}\""}
+            end
+          end
+        end
+        
   ues.vm.provision "shell", path: "provision_ues_VM.sh", privileged: false
     end
 
@@ -73,6 +120,44 @@ Vagrant.configure("2") do |config|
             lv.cpus = FREE5GC_VM_CPUS
             lv.nic_model_type = "virtio"
         end
+        
+        # CPU pinning via trigger after VM is up
+        if FREE5GC_VM_CPUSET && !FREE5GC_VM_CPUSET.empty?
+          free5gc.trigger.after [:up, :reload] do |trigger|
+            trigger.name = "Pin vCPUs to host CPUs"
+            trigger.info = "Pinning free5GC VM vCPUs to host CPUs: #{FREE5GC_VM_CPUSET}"
+            
+            # Parse cpuset
+            cpuset_array = []
+            if FREE5GC_VM_CPUSET.include?('-')
+              range_parts = FREE5GC_VM_CPUSET.split('-')
+              if range_parts.length == 2
+                start_cpu = range_parts[0].to_i
+                end_cpu = range_parts[1].to_i
+                cpuset_array = (start_cpu..end_cpu).to_a
+              end
+            elsif FREE5GC_VM_CPUSET.include?(',')
+              cpuset_array = FREE5GC_VM_CPUSET.split(',').map(&:strip).map(&:to_i)
+            else
+              cpuset_array = [FREE5GC_VM_CPUSET.to_i]
+            end
+            
+            if cpuset_array.length > 0
+              domain_name = "free5gc_PacketRusher_free5GC"
+              
+              # Build single command to pin all vcpus
+              pin_commands = []
+              FREE5GC_VM_CPUS.times do |vcpu_id|
+                host_cpu = cpuset_array[vcpu_id % cpuset_array.length]
+                pin_commands << "virsh vcpupin #{domain_name} #{vcpu_id} #{host_cpu}"
+              end
+              
+              # Execute all pins in one sudo call
+              trigger.run = {inline: "sudo bash -c \"#{pin_commands.join(' && ')}\""}
+            end
+          end
+        end
+        
         free5gc.vm.provision "shell", path: "provision_free5gc.sh", privileged: false
     end
 end
